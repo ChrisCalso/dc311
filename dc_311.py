@@ -18,7 +18,7 @@ def fetch_data():
     return data
 
 data = fetch_data().copy()
-st.write(data.head())
+##st.write(data.head())
 
 
 # get list of types of 311 calls to add to a sidebar menu
@@ -51,5 +51,84 @@ map_df = get_data_code_ward(data, code_value, ward_values).copy()
 map_df = map_df.rename(columns={'LATITUDE': 'lat',
                                 'LONGITUDE': 'lon'})
 st.map(map_df)
+
+st.write('##Periodic Call Volume')
+options = ['Hour', 'Day', 'Month']
+granularity = st.radio('Pick your granularity:', options, index = 2)
+
+bar_df = get_data_code_ward(data, code_value, ward_values).copy()
+if granularity == 'Hour':
+    bar_df['x'] = bar_df.ADDDATE.dt.hour
+elif granularity == 'Day':
+    bar_df['x'] = bar_df.ADDDATE.dt.day
+else:
+    bar_df['x'] = bar_df.ADDDATE.dt.month
+
+bar_df = bar_df[['x', 'SERVICECALLCOUNT']].groupby('x').sum()
+st.bar_chart(bar_df)
+
+#Chart 3: Making polynomial predictions about 311
+st.write('## Predicting Calls by Month')
+degree = st.slider('Degree of polynomial to fit:', 1, 5, value=3)
+
+@st.cache
+def fit_linear_model(degree, data, code, wards):
+    bulk_df = get_data_code_ward(data, code, wards).copy()
+    bulk_df = bulk_df[['SERVICECALLCOUNT', 'ADDDATE']].set_index('ADDDATE')
+
+    grouped_df = bulk_df.resample('1w').sum()
+    #do this twice so we get a column we can reference in our charts
+    grouped_df = grouped_df.reset_index()
+    grouped_df = grouped_df.reset_index()
+    grouped_df.columns = ['Week Number', 'Date', 'Call Count']
+
+    model = PolynomialFeatures(degree = degree)
+    xp = model.fit_transform(grouped_df[['Week Number']])
+    lm = LinearRegression()
+    lm.fit(xp, grouped_df['Call Count'])
+    grouped_df['predictions'] = lm.predict(xp)
+
+    grouped_df = grouped_df[['Date', 'Call Count', 'predictions']].set_index('Date')
+    return grouped_df.copy()
+
+predict_df = fit_linear_model(degree, data, code_value, ward_values)
+st.line_chart(predict_df)
+
+# Chart 4: Where should our staff go?
+st.write('##Where should we send our staff?')
+staff = st.slider('Number of staff to allocate:', 1, 30, value = 10)
+@st.cache
+def fit_cluster_model(staff, data, code, wards):
+    cluster_df = get_data_code_ward(data, code, wards).copy()
+
+    #clean data - we only want lat & lon to predict
+    cluster_df = cluster_df[['X','Y']]
+    cluster_df = cluster_df.copy()
+    kmeans = KMeans(n_clusters = staff, random_state=0)
+    kmeans.fit(cluster_df)
+
+    cluster_df['labels'] = kmeans.labels_
+    return cluster_df
+
+df = fit_cluster_model(staff, data, code_value, ward_values)
+
+st.vega_lite_chart(df, {
+    'width': 600,
+    'height': 600,
+    'mark': 'point',
+    'autosize': {
+        "type": "fit",
+        "contains": "padding"
+    }, 
+    'encoding': {
+        'x': {'field': 'X', 'type': 'quantitative', 'scale': {
+            'domain': [df.X.min(), df.X.max()]
+        }},
+        'y': {'field': 'Y', 'type': 'quantitative', 'scale': {
+            'domain': [df.Y.min(), df.Y.max()]
+        }},
+        'color': {'field': 'labels', 'type': 'nominal'},
+    },
+})
   
 
